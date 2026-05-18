@@ -104,18 +104,72 @@ Store per-layer K/V for past positions; each decode step only computes Q/K/V for
 
 ## Model strategy
 
+**Default path:** GPT-2 only through v0.1 (MVP) and v1.0 (spec). **Llama 3 is optional v2** — not Phase 2, not required for the portfolio story.
+
 ### MVP + v1.0: GPT-2 family only
 
 | Role | Model | Notes |
 |------|--------|------|
-| Target | `gpt2` (124M) | Parity reference |
+| Target | `gpt2` (124M) | Parity reference; all phases until v1.0 |
 | Draft (v1.0) | `distilgpt2` | Same GPT-2 BPE tokenizer — do not use a custom bigram |
 
-**Tokenizer:** one `tokenizers` instance / vocab for both models.
+**Tokenizer:** one `tokenizers` instance / vocab for both target and draft.
 
-### v2 (optional later): Llama-style backend
+---
 
-Separate milestone: RMSNorm, RoPE, GQA, new parity suite. Treat as **weeks**, not days.
+## GPT-2 vs Llama 3 — what’s actually different
+
+You **cannot** load Llama 3 weights into the GPT-2 `forward()` and expect sensible output. Checkpoints are tied to a specific computation graph. “New backend” in this repo means **`model/llama.py` + Llama weight mapping + Llama parity tests** — not a second bench suite, CLI, or speculative algorithm.
+
+### Architecture comparison (why the forward pass differs)
+
+| Component | GPT-2 (`gpt2`) | Llama 3 |
+|-----------|----------------|---------|
+| Position encoding | Learned absolute embeddings `wpe` added to token embeds | **RoPE** — rotary encodings applied to Q and K; no `wpe` table |
+| Normalization | **LayerNorm** (ε=1e-5, bias) before each sublayer | **RMSNorm** (no mean centering; usually no bias) |
+| Attention | Multi-head attention (MHA): 12 Q / 12 K / 12 V heads @ 124M | **GQA**: many query heads, fewer KV heads (e.g. 32 Q / 8 KV on larger configs) |
+| MLP | `Linear → GELU → Linear` (3072 hidden on 124M) | **SwiGLU**: gate + up projections, SiLU activation |
+| LM head | **Tied** to token embedding `wte` | Typically **untied** separate head |
+| HF weight layout | `Conv1D` (weight shape `[in, out]`, applied as `x @ W`) | Standard `nn.Linear`; still needs careful key mapping |
+
+Same high-level picture (decoder-only transformer: attn → residual → MLP → residual), **different per-layer math and tensor shapes**.
+
+### What reuses vs what you rewrite (v2 Llama)
+
+| Layer of the stack | GPT-2 path | Llama 3 path |
+|--------------------|------------|--------------|
+| `model/gpt2.py` / `model/llama.py` | **Implement** | **Rewrite** (RoPE, RMSNorm, GQA, SwiGLU) |
+| `weights.py` key mapping | GPT-2 `state_dict` keys | New mapping table |
+| `tokenizer.py` | GPT-2 BPE | Llama tokenizer (SentencePiece) |
+| `cache.py` | **Same idea**, different shapes | KV heads = `num_kv_heads`, not `num_heads`; RoPE position = `past_len` offset on Q/K |
+| `engine.py` decode loop | prefill → `decode_step` | **Same loop**; calls `LlamaModel`, passes correct position offset for RoPE |
+| `speculate.py` | draft=`distilgpt2` | draft must be **Llama-family** + same tokenizer |
+| `bench/*`, `cli`, `metrics.py` | **Reuse** | Same metrics (TTFT, ITL, TPS, memory); different `model_id` in config |
+| Parity tests | vs `GPT2LMHeadModel` | vs `AutoModelForCausalLM` (Llama); full suite re-run |
+
+**KV cache:** concept is identical (store past K/V, append each step, attend over cache). Implementation differs because (1) **GQA** stores fewer K/V heads, (2) **RoPE** must rotate Q/K with the correct absolute position when writing new cache slots — a common v2 bug is off-by-one position vs cache length.
+
+### Mental model
+
+```
+bench / CLI / engine loop / speculative algorithm  →  reuse
+model/*.py + weight map + KV layout + RoPE positions  →  swap per model family
+```
+
+### v2 (optional): Llama-style module
+
+Only consider after **GPT-2 v0.1 is green** (KV + bench) or **v1.0** (spec) if you want one thing at a time.
+
+| v2 deliverable | Effort driver |
+|----------------|---------------|
+| `model/llama.py` | RoPE trig + GQA einsums + SwiGLU |
+| `weights.py` | New HF key → parameter map |
+| `tests/test_parity_llama.py` | Same milestone order as Phase 1 (block → full prefill) |
+| Re-run Phase 3 gates on Llama | KV + RoPE interaction |
+
+Suggested v2 model: a **small** Llama (e.g. `Llama-3.2-1B`) before 8B — faster parity iteration. Treat as **weeks**, not days.
+
+**Out of scope unless explicitly chosen:** v2 is not implied by the repo name; GPT-2 + spec is a complete project.
 
 ---
 
@@ -153,8 +207,9 @@ mini-spec-ir/
 │   ├── weights.py
 │   ├── tokenizer.py
 │   ├── model/
-│   │   ├── gpt2.py
-│   │   └── layers.py
+│   │   ├── gpt2.py       # Phase 1–v1.0
+│   │   ├── llama.py      # v2 optional (RoPE, RMSNorm, GQA)
+│   │   └── layers.py     # shared primitives where possible (masks); model-specific norms
 │   ├── cache.py
 │   ├── engine.py          # MVP: prefill, decode_step, generate_vanilla
 │   ├── speculate.py       # v1.0 only
