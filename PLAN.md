@@ -244,7 +244,8 @@ mini-spec-ir/
 
 **Hardest risk:** silent shape/transpose bugs. Budget time here.
 
-- [ ] `weights.py` + `tokenizer.py`
+- [x] `tokenizer.py`
+- [x] `weights.py` (HF Option A: `GPT2LMHeadModel` → CPU fp32 `state_dict`)
 - [ ] One transformer block → logits match HF (prefill), **fp32, CPU first**
 - [ ] Full stack → prefill logits match (atol `1e-4` or tight rtol)
 - [ ] Same tests on MPS once CPU is green
