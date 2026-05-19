@@ -45,13 +45,79 @@ def cmd_download(args: argparse.Namespace) -> int:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
-    print("generate: not implemented yet (Phase 2+)", file=sys.stderr)
-    return 1
+    import time
+    import torch
+    from minispecir.tokenizer import TokenizerWrapper
+    from minispecir.weights import load_gpt2_architecture, load_hf_state_dict
+    from minispecir.model.gpt2 import GPT2Model
+    from minispecir.engine import generate_kv
+
+    device = resolve_device(args.device)
+    model_dir = Path(args.model_dir) if args.model_dir else None
+
+    print(f"Loading {args.model} on {device}…", file=sys.stderr)
+    arch = load_gpt2_architecture(args.model, model_dir=model_dir, local_files_only=False)
+    state = load_hf_state_dict(args.model, model_dir=model_dir, local_files_only=False)
+    model = GPT2Model(arch, state, device)
+    tokenizer = TokenizerWrapper.from_pretrained(args.model)
+
+    prompt_ids = tokenizer.encode(args.prompt)
+    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+
+    t0 = time.perf_counter()
+    output_ids = generate_kv(model, input_ids, max_new_tokens=args.max_new_tokens)
+    elapsed = time.perf_counter() - t0
+
+    text = tokenizer.decode(output_ids[0].tolist())
+    print(text)
+
+    n_new = output_ids.shape[1] - len(prompt_ids)
+    print(f"\n[{n_new} tokens in {elapsed:.2f}s — {n_new / elapsed:.1f} tok/s]", file=sys.stderr)
+    return 0
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    print("bench: not implemented yet (Phase 4+)", file=sys.stderr)
-    return 1
+    import sys as _sys
+    import torch
+    from minispecir.tokenizer import TokenizerWrapper
+    from minispecir.weights import load_gpt2_architecture, load_hf_state_dict
+    from minispecir.model.gpt2 import GPT2Model
+    from bench.bench_kv import run_bench
+    from bench.report import write_report
+
+    device = resolve_device(args.device)
+    model_dir = Path(args.model_dir) if args.model_dir else None
+
+    print(f"Loading {args.model} on {device}…", file=sys.stderr)
+    arch = load_gpt2_architecture(args.model, model_dir=model_dir, local_files_only=False)
+    state = load_hf_state_dict(args.model, model_dir=model_dir, local_files_only=False)
+    model = GPT2Model(arch, state, device)
+    tokenizer = TokenizerWrapper.from_pretrained(args.model)
+
+    prompts_text = [
+        "Hello, my name is",
+        "The quick brown fox",
+        "Once upon a time",
+        "In the beginning",
+        "To be or not to be",
+    ]
+    prompts = [(t, tokenizer.encode(t)) for t in prompts_text]
+
+    print(f"Running bench (max_new_tokens={args.max_new_tokens}, warmup={args.warmup})…", file=sys.stderr)
+    results = run_bench(
+        model,
+        prompts,
+        max_new_tokens=args.max_new_tokens,
+        warmup=args.warmup,
+        run_vanilla=not args.kv_only,
+    )
+
+    from bench.report import render_markdown, write_report
+    print(render_markdown(results))
+
+    report_path = write_report(results, Path(args.output))
+    print(f"\nReport saved → {report_path}", file=sys.stderr)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,23 +171,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dl_p.set_defaults(func=cmd_download)
 
-    gen_p = sub.add_parser("generate", help="Greedy generation (Phase 2+)")
+    gen_p = sub.add_parser("generate", help="Greedy generation with KV cache")
     gen_p.add_argument("prompt", help="Input prompt text")
-    gen_p.add_argument(
-        "--max-new-tokens",
-        type=int,
-        default=32,
-        help="Tokens to generate",
-    )
+    gen_p.add_argument("--max-new-tokens", type=int, default=32, help="Tokens to generate (default: 32)")
+    gen_p.add_argument("--model", default=DEFAULT_MODEL.model_id, help="Model id (default: gpt2)")
+    gen_p.add_argument("--model-dir", default=None, help="Local model snapshot directory")
+    gen_p.add_argument("--device", default=DEFAULT_RUNTIME.device, help="Device override (default: auto)")
     gen_p.set_defaults(func=cmd_generate)
 
-    bench_p = sub.add_parser("bench", help="Run benchmarks (Phase 4+)")
-    bench_p.add_argument(
-        "--output",
-        type=str,
-        default="reports/",
-        help="Report output directory",
-    )
+    bench_p = sub.add_parser("bench", help="Benchmark TTFT / ITL / TPS (vanilla vs KV)")
+    bench_p.add_argument("--output", type=str, default="reports/", help="Report output directory")
+    bench_p.add_argument("--model", default=DEFAULT_MODEL.model_id, help="Model id (default: gpt2)")
+    bench_p.add_argument("--model-dir", default=None, help="Local model snapshot directory")
+    bench_p.add_argument("--device", default=DEFAULT_RUNTIME.device, help="Device override (default: auto)")
+    bench_p.add_argument("--max-new-tokens", type=int, default=50, help="Tokens to generate per prompt (default: 50)")
+    bench_p.add_argument("--warmup", type=int, default=1, help="Warm-up runs before timing (default: 1)")
+    bench_p.add_argument("--kv-only", action="store_true", help="Skip vanilla (slow) mode")
     bench_p.set_defaults(func=cmd_bench)
 
     return parser
