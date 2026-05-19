@@ -9,6 +9,10 @@ __pycache__/
 # Local model snapshots (minispecir download)
 models/
 
+# Planning / design docs (local only)
+PLAN.md
+ARCHITECTURE.md
+
 # Distribution / packaging
 .Python
 build/
