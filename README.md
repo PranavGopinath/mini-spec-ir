@@ -2,9 +2,7 @@
 
 Minimal **spec**ulative **i**nference **r**untime for local GPT-2 (Apple Silicon / MPS).
 
-**Status:** v0.1 in progress — Phase 0 scaffold. Core decoder + KV cache → v0.1; speculative decoding → v1.0.
-
-See [PLAN.md](PLAN.md) for the full roadmap.
+**Status:** Core decoder + KV cache → v0.1; speculative decoding → v1.0.
 
 ## Setup
 
