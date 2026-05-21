@@ -30,6 +30,31 @@ class GPT2Architecture:
     def head_dim(self) -> int:
         return self.n_embd // self.n_head
 
+    @property
+    def n_kv_head(self) -> int:
+        """GPT-2 uses MHA — KV head count equals query head count."""
+        return self.n_head
+
+
+@dataclass(frozen=True)
+class LlamaArchitecture:
+    """Architecture hyperparameters for Llama 3 (from HF config.json)."""
+
+    n_layer: int
+    n_head: int          # query heads
+    n_kv_head: int       # key/value heads (GQA: n_kv_head < n_head)
+    n_embd: int
+    n_inner: int         # ffn intermediate size
+    vocab_size: int
+    n_positions: int     # practical cache size (capped for memory)
+    rope_theta: float
+    rms_norm_eps: float
+    rope_scaling: dict | None = None   # None → standard RoPE; dict → Llama 3 scaled RoPE
+
+    @property
+    def head_dim(self) -> int:
+        return self.n_embd // self.n_head
+
 
 def _cache_dir_arg(cache_dir: Path | str | None) -> str | None:
     if cache_dir is None:
@@ -180,3 +205,84 @@ def load_gpt2_architecture_from_config(config: ModelConfig) -> GPT2Architecture:
         local_files_only=config.local_files_only,
         cache_dir=config.cache_dir,
     )
+
+
+# ---------------------------------------------------------------------------
+# Llama loaders
+# ---------------------------------------------------------------------------
+
+_LLAMA_CACHE_MAX_SEQ = 4096  # practical KV cache allocation (full ctx = 131072, too large)
+
+
+def load_llama_architecture(
+    model_id: str = "meta-llama/Meta-Llama-3.1-8B",
+    *,
+    model_dir: Path | str | None = None,
+    local_files_only: bool = False,
+    cache_dir: Path | str | None = None,
+    cache_max_seq: int = _LLAMA_CACHE_MAX_SEQ,
+) -> "LlamaArchitecture":
+    """Load Llama 3 hyperparameters from a local snapshot or the Hub."""
+    from transformers import AutoConfig
+
+    source, local_only = resolve_pretrained_source(
+        model_id,
+        Path(model_dir) if model_dir is not None else None,
+        local_files_only=local_files_only,
+    )
+    config = AutoConfig.from_pretrained(
+        source,
+        local_files_only=local_only,
+        cache_dir=_cache_dir_arg(cache_dir),
+    )
+    rope_scaling = getattr(config, "rope_scaling", None)
+    return LlamaArchitecture(
+        n_layer=config.num_hidden_layers,
+        n_head=config.num_attention_heads,
+        n_kv_head=config.num_key_value_heads,
+        n_embd=config.hidden_size,
+        n_inner=config.intermediate_size,
+        vocab_size=config.vocab_size,
+        n_positions=cache_max_seq,
+        rope_theta=float(config.rope_theta),
+        rms_norm_eps=float(config.rms_norm_eps),
+        rope_scaling=dict(rope_scaling) if rope_scaling is not None else None,
+    )
+
+
+def load_llama_state_dict(
+    model_id: str = "meta-llama/Meta-Llama-3.1-8B",
+    *,
+    model_dir: Path | str | None = None,
+    local_files_only: bool = False,
+    cache_dir: Path | str | None = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> StateDict:
+    """
+    Load Llama 3 weights into a CPU state_dict.
+
+    Loads in bfloat16 by default (~16 GB for 8B).
+    Filters out rotary_emb.inv_freq buffers (recomputed at runtime).
+    """
+    from transformers import AutoModelForCausalLM
+
+    source, local_only = resolve_pretrained_source(
+        model_id,
+        Path(model_dir) if model_dir is not None else None,
+        local_files_only=local_files_only,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        source,
+        local_files_only=local_only,
+        cache_dir=_cache_dir_arg(cache_dir),
+        torch_dtype=dtype,
+        device_map="cpu",
+    )
+    model.eval()
+    state = {
+        key: tensor.detach().cpu().clone()
+        for key, tensor in model.state_dict().items()
+        if "rotary_emb.inv_freq" not in key
+    }
+    del model
+    return state

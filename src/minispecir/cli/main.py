@@ -44,28 +44,53 @@ def cmd_download(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_model(args: argparse.Namespace, device: "torch.device"):
+    """Load arch + weights + model object based on --arch flag."""
+    import torch
+    from minispecir.engine import EOS_TOKEN_ID as GPT2_EOS
+
+    model_dir = Path(args.model_dir) if args.model_dir else None
+
+    if args.arch == "llama":
+        from minispecir.weights import load_llama_architecture, load_llama_state_dict
+        from minispecir.model.llama import LlamaModel
+        arch = load_llama_architecture(args.model, model_dir=model_dir, local_files_only=False)
+        state = load_llama_state_dict(args.model, model_dir=model_dir, local_files_only=False)
+        model = LlamaModel(arch, state, device)
+        eos_token_id = 128001  # Llama 3 <|end_of_text|>
+    else:
+        from minispecir.weights import load_gpt2_architecture, load_hf_state_dict
+        from minispecir.model.gpt2 import GPT2Model
+        arch = load_gpt2_architecture(args.model, model_dir=model_dir, local_files_only=False)
+        state = load_hf_state_dict(args.model, model_dir=model_dir, local_files_only=False)
+        model = GPT2Model(arch, state, device)
+        eos_token_id = GPT2_EOS
+
+    return model, eos_token_id
+
+
 def cmd_generate(args: argparse.Namespace) -> int:
     import time
     import torch
     from minispecir.tokenizer import TokenizerWrapper
-    from minispecir.weights import load_gpt2_architecture, load_hf_state_dict
-    from minispecir.model.gpt2 import GPT2Model
     from minispecir.engine import generate_kv
+    from minispecir.cache import KVCache
 
     device = resolve_device(args.device)
-    model_dir = Path(args.model_dir) if args.model_dir else None
 
     print(f"Loading {args.model} on {device}…", file=sys.stderr)
-    arch = load_gpt2_architecture(args.model, model_dir=model_dir, local_files_only=False)
-    state = load_hf_state_dict(args.model, model_dir=model_dir, local_files_only=False)
-    model = GPT2Model(arch, state, device)
+    model, eos_token_id = _load_model(args, device)
     tokenizer = TokenizerWrapper.from_pretrained(args.model)
 
     prompt_ids = tokenizer.encode(args.prompt)
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
     t0 = time.perf_counter()
-    output_ids = generate_kv(model, input_ids, max_new_tokens=args.max_new_tokens)
+    output_ids = generate_kv(
+        model, input_ids,
+        max_new_tokens=args.max_new_tokens,
+        eos_token_id=eos_token_id,
+    )
     elapsed = time.perf_counter() - t0
 
     text = tokenizer.decode(output_ids[0].tolist())
@@ -226,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen_p.add_argument("--max-new-tokens", type=int, default=32, help="Tokens to generate (default: 32)")
     gen_p.add_argument("--model", default=DEFAULT_MODEL.model_id, help="Model id (default: gpt2)")
     gen_p.add_argument("--model-dir", default=None, help="Local model snapshot directory")
+    gen_p.add_argument("--arch", default="gpt2", choices=["gpt2", "llama"], help="Model architecture (default: gpt2)")
     gen_p.add_argument("--device", default=DEFAULT_RUNTIME.device, help="Device override (default: auto)")
     gen_p.set_defaults(func=cmd_generate)
 

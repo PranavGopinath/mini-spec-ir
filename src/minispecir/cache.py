@@ -1,5 +1,6 @@
-"""Pre-allocated KV cache for GPT-2 autoregressive decoding.
+"""Pre-allocated KV cache for autoregressive decoding.
 
+Supports both MHA (GPT-2, n_kv_head == n_head) and GQA (Llama, n_kv_head < n_head).
 Buffers are allocated once at construction; each decode step writes K/V
 in-place via index assignment — no torch.cat in the hot loop.
 """
@@ -7,16 +8,17 @@ from __future__ import annotations
 
 import torch
 
-from minispecir.weights import GPT2Architecture
-
 
 class KVCache:
     """
     Per-layer key/value cache for one batch entry.
 
     Shapes:
-        k_cache, v_cache: [n_layer, B, n_head, max_seq, head_dim]
+        k_cache, v_cache: [n_layer, B, n_kv_head, max_seq, head_dim]
         past_len: int — number of token positions committed so far
+
+    For MHA (GPT-2): n_kv_head == n_head.
+    For GQA (Llama): n_kv_head < n_head; the model expands KV heads before attention.
 
     Protocol:
         1. model.forward() calls cache.write(layer, k_new, v_new) then cache.read(layer, T_new)
@@ -28,13 +30,13 @@ class KVCache:
         self,
         n_layer: int,
         B: int,
-        n_head: int,
+        n_kv_head: int,
         max_seq: int,
         head_dim: int,
         device: torch.device,
         dtype: torch.dtype = torch.float32,
     ) -> None:
-        shape = (n_layer, B, n_head, max_seq, head_dim)
+        shape = (n_layer, B, n_kv_head, max_seq, head_dim)
         self.k_cache = torch.zeros(shape, device=device, dtype=dtype)
         self.v_cache = torch.zeros(shape, device=device, dtype=dtype)
         self.past_len: int = 0
@@ -85,18 +87,25 @@ class KVCache:
     @classmethod
     def from_arch(
         cls,
-        arch: GPT2Architecture,
+        arch: object,
         *,
         B: int = 1,
+        max_seq: int | None = None,
         device: torch.device,
         dtype: torch.dtype = torch.float32,
     ) -> "KVCache":
-        """Convenience constructor from a GPT2Architecture."""
+        """
+        Convenience constructor from a GPT2Architecture or LlamaArchitecture.
+
+        Both architectures expose .n_layer, .n_kv_head, .n_positions, .head_dim.
+        Pass max_seq to override arch.n_positions (useful when arch.n_positions is
+        very large, e.g. Llama 3.1's 131072).
+        """
         return cls(
             n_layer=arch.n_layer,
             B=B,
-            n_head=arch.n_head,
-            max_seq=arch.n_positions,
+            n_kv_head=arch.n_kv_head,
+            max_seq=max_seq if max_seq is not None else arch.n_positions,
             head_dim=arch.head_dim,
             device=device,
             dtype=dtype,
