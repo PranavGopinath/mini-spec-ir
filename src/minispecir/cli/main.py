@@ -76,6 +76,56 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_spec(args: argparse.Namespace) -> int:
+    import time
+    import torch
+    from minispecir.tokenizer import TokenizerWrapper
+    from minispecir.weights import load_gpt2_architecture, load_hf_state_dict
+    from minispecir.model.gpt2 import GPT2Model
+    from minispecir.speculate import generate_spec
+
+    device = resolve_device(args.device)
+    model_dir = Path(args.model_dir) if args.model_dir else None
+    draft_dir = Path(args.draft_model_dir) if args.draft_model_dir else None
+
+    print(f"Loading target {args.model} on {device}…", file=sys.stderr)
+    target_arch = load_gpt2_architecture(args.model, model_dir=model_dir, local_files_only=False)
+    target_state = load_hf_state_dict(args.model, model_dir=model_dir, local_files_only=False)
+    target = GPT2Model(target_arch, target_state, device)
+
+    print(f"Loading draft {args.draft_model} on {device}…", file=sys.stderr)
+    draft_arch = load_gpt2_architecture(args.draft_model, model_dir=draft_dir, local_files_only=False)
+    draft_state = load_hf_state_dict(args.draft_model, model_dir=draft_dir, local_files_only=False)
+    draft = GPT2Model(draft_arch, draft_state, device)
+
+    tokenizer = TokenizerWrapper.from_pretrained(args.model)
+    prompt_ids = tokenizer.encode(args.prompt)
+    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+
+    t0 = time.perf_counter()
+    output_ids, stats = generate_spec(
+        target, draft, input_ids,
+        max_new_tokens=args.max_new_tokens,
+        gamma=args.gamma,
+    )
+    elapsed = time.perf_counter() - t0
+
+    text = tokenizer.decode(output_ids[0].tolist())
+    print(text)
+
+    n_new = output_ids.shape[1] - len(prompt_ids)
+    accept_pct = (
+        stats["accepted"] / stats["total_draft"] * 100
+        if stats["total_draft"] > 0 else 0.0
+    )
+    print(
+        f"\n[{n_new} tokens in {elapsed:.2f}s — {n_new / elapsed:.1f} tok/s, "
+        f"acceptance {accept_pct:.1f}% (γ={args.gamma})]",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def cmd_bench(args: argparse.Namespace) -> int:
     import sys as _sys
     import torch
@@ -178,6 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     gen_p.add_argument("--model-dir", default=None, help="Local model snapshot directory")
     gen_p.add_argument("--device", default=DEFAULT_RUNTIME.device, help="Device override (default: auto)")
     gen_p.set_defaults(func=cmd_generate)
+
+    spec_p = sub.add_parser("spec", help="Speculative decoding (draft=distilgpt2, target=gpt2)")
+    spec_p.add_argument("prompt", help="Input prompt text")
+    spec_p.add_argument("--max-new-tokens", type=int, default=32, help="Tokens to generate (default: 32)")
+    spec_p.add_argument("--gamma", type=int, default=DEFAULT_RUNTIME.gamma, help=f"Draft tokens per step (default: {DEFAULT_RUNTIME.gamma})")
+    spec_p.add_argument("--model", default=DEFAULT_MODEL.model_id, help="Target model id (default: gpt2)")
+    spec_p.add_argument("--model-dir", default=None, help="Local target model snapshot directory")
+    spec_p.add_argument("--draft-model", default="distilgpt2", help="Draft model id (default: distilgpt2)")
+    spec_p.add_argument("--draft-model-dir", default=None, help="Local draft model snapshot directory")
+    spec_p.add_argument("--device", default=DEFAULT_RUNTIME.device, help="Device override (default: auto)")
+    spec_p.set_defaults(func=cmd_spec)
 
     bench_p = sub.add_parser("bench", help="Benchmark TTFT / ITL / TPS (vanilla vs KV)")
     bench_p.add_argument("--output", type=str, default="reports/", help="Report output directory")

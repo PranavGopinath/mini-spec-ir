@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from bench.bench_kv import BenchResult
+from bench.bench_spec import SpecBenchResult
 
 
 _HEADER = """\
@@ -58,6 +59,42 @@ def render_markdown(results: list[BenchResult]) -> str:
             tps=r.tps,
         ))
     lines.append(_NOTES)
+    return "".join(lines)
+
+
+_SPEC_TABLE_HEADER = """\
+## Speculative decoding
+
+| γ | prompt | p_len | gen | steps | accept% | TPS |
+|--:|--------|------:|----:|------:|--------:|----:|
+"""
+
+_SPEC_ROW = "| {gamma} | {prompt} | {p_len} | {gen} | {steps} | {accept:.1f}% | {tps:.1f} |\n"
+
+_SPEC_NOTES = """
+- **γ** — draft tokens proposed per speculative step.
+- **accept%** — fraction of draft tokens accepted by the target (higher = more efficient).
+- Spec TPS measures total generated tokens / wall time (prefill included).
+"""
+
+
+def render_spec_section(results: list[SpecBenchResult]) -> str:
+    """Render a Markdown section for speculative decoding results."""
+    if not results:
+        return ""
+    lines = [_SPEC_TABLE_HEADER]
+    for r in results:
+        prompt_short = (r.prompt[:28] + "…") if len(r.prompt) > 29 else r.prompt
+        lines.append(_SPEC_ROW.format(
+            gamma=r.gamma,
+            prompt=prompt_short,
+            p_len=r.prompt_len,
+            gen=r.generated,
+            steps=r.total_steps,
+            accept=r.acceptance_rate * 100,
+            tps=r.tps,
+        ))
+    lines.append(_SPEC_NOTES)
     return "".join(lines)
 
 
