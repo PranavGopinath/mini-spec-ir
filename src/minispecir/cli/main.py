@@ -198,7 +198,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="minispecir",
-        description="mini-spec-ir — minimal speculative inference runtime for local GPT-2",
+        description="mini-spec-ir — minimal speculative inference runtime for local LLMs",
     )
     parser.add_argument(
         "-v",

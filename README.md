@@ -1,6 +1,8 @@
 # mini-spec-ir
 
-Minimal **spec**ulative **i**nference **r**untime for local GPT-2 (Apple Silicon / MPS).
+Minimal **spec**ulative **i**nference **r**untime for local LLMs (Apple Silicon / MPS).
+
+Supports **Llama 3 8B** and **GPT-2** with a custom forward pass (no `model.generate()`), pre-allocated KV cache, and speculative decoding.
 
 **Status:** Core decoder + KV cache → v0.1; speculative decoding → v1.0.
 
@@ -17,24 +19,27 @@ pip install -e ".[dev]"
 ## CLI
 
 ```bash
-# Help
-python -m minispecir.cli.main --help
 minispecir --help
 
-# Device / version info (shows whether models/gpt2 is present)
+# Device / version info
 minispecir info
 
-# One-time download to ./models/gpt2 (production-style local snapshot)
-minispecir download
+# Download a model snapshot (needs network once)
+minispecir download --model meta-llama/Meta-Llama-3-8B-Instruct   # ~16GB
+minispecir download --model gpt2                                    # ~500MB
+
+# Greedy generation with KV cache
+minispecir generate "The quick brown fox" --arch llama --model meta-llama/Meta-Llama-3-8B-Instruct
+minispecir generate "The quick brown fox" --arch gpt2  --model gpt2
+
+# Speculative decoding (target=gpt2, draft=distilgpt2)
+minispecir spec "The quick brown fox" --model gpt2 --draft-model distilgpt2 --gamma 4
+
+# Benchmark TTFT / ITL / TPS (vanilla vs KV)
+minispecir bench --model gpt2
 ```
 
-Weights load from **`models/gpt2`** with `local_files_only=True` by default (no Hub at inference load time). First time only:
-
-```bash
-minispecir download   # ~500MB for gpt2, needs network once
-```
-
-Override: set `ModelConfig(model_dir=..., local_files_only=True)` or pass `local_files_only=False` to fall back to the HF hub cache (dev only).
+Weights load with `local_files_only=True` by default. Use `--model-dir` to point at a local snapshot directory.
 
 ## Tests
 
